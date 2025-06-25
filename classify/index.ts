@@ -19,15 +19,15 @@ export const classifyDish = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No image provided" });
     }
 
-    const imageBuffer = Buffer.isBuffer(imageData)
-      ? imageData
-      : Buffer.from(
-          imageData.replace(/^data:image\/\w+;base64,/, ""),
-          "base64"
-        );
+    // const imageBuffer = Buffer.isBuffer(imageData)
+    //   ? imageData
+    //   : Buffer.from(
+    //       imageData.replace(/^data:image\/\w+;base64,/, ""),
+    //       "base64"
+    //     );
 
     const model = await getModel();
-    const imageTensor = tf.node.decodeImage(imageBuffer) as tf.Tensor3D;
+    const imageTensor = tf.node.decodeImage(imageData) as tf.Tensor3D;
     const predictions = await model.classify(imageTensor);
     imageTensor.dispose();
 
