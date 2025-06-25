@@ -21,12 +21,24 @@ export const classifyDish = async (req: Request, res: Response) => {
     console.log({imageData})
 
     // Ensure imageData is a Buffer
-    const imageBuffer = Buffer.isBuffer(imageData)
-      ? imageData
-      : Buffer.from(
-          imageData.replace(/^data:image\/\w+;base64,/, ""),
-          "base64"
+    let imageBuffer: Buffer;
+
+    if (Buffer.isBuffer(imageData)) {
+      imageBuffer = imageData;
+    } else if (
+      imageData &&
+      imageData.type === "Buffer" &&
+      Array.isArray(imageData.data)
+    ) {
+      imageBuffer = Buffer.from(imageData.data);
+    } else if (typeof imageData === "string") {
+      imageBuffer = Buffer.from(
+        imageData.replace(/^data:image\/\w+;base64,/, ""),
+        "base64"
       );
+    } else {
+      return res.status(400).json({ error: "Invalid image data" });
+    }
     
     console.log({imageBuffer})
 
