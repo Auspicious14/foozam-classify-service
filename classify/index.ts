@@ -5,7 +5,7 @@ import * as mobilenet from "@tensorflow-models/mobilenet";
 let model: mobilenet.MobileNet | null = null;
 async function getModel() {
   if (!model) {
-    model = await mobilenet.load();
+    model = await mobilenet.load({version: 2});
   }
   return model;
 }
