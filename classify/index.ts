@@ -44,10 +44,10 @@ export const classifyDish = async (req: Request, res: Response) => {
 
     const model = await getModel();
     const imageTensor = tf.node.decodeImage(imageBuffer) as tf.Tensor3D;
-    const predictions = await model.classify(imageTensor);
+    const predictions = await model.classify(imageTensor, 5);
     imageTensor.dispose();
 
-    const topPredictions = predictions.slice(0, 3).map((p) => ({
+    const topPredictions = predictions.map((p) => ({
       dish: p.className,
       confidence: Math.round(p.probability * 100),
     }));
