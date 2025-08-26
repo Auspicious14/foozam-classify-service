@@ -1,53 +1,64 @@
 import { Request, Response } from "express";
 import * as tf from "@tensorflow/tfjs-node";
-import { FOOD_LABELS } from "./food-labels";
+import fetch from "node-fetch";
 
-const MODEL_URL = "https://tfhub.dev/google/aiy/vision/classifier/food_V1/1";
+// --- Configuration: URLs for the hosted model and labels ---
+const MODEL_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/tfjs_food_model/model.json";
+const LABELS_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/food_labels.txt";
 
+// --- Singleton to hold the loaded model and labels ---
 let model: tf.LayersModel | null = null;
-async function getModel() {
-  if (!model) {
-    console.log("Loading model...");
-    model = await tf.loadLayersModel(MODEL_URL, { fromTFHub: true });
-    console.log("Model loaded.");
+let labels: string[] | null = null;
+
+async function getOrLoadModelAndLabels() {
+  if (model && labels) {
+    return { model, labels };
   }
-  return model;
+
+  console.log("Loading model and labels for the first time...");
+
+  // Load the model from the URL
+  const loadedModel = await tf.loadLayersModel(MODEL_URL);
+
+  // Fetch and parse the labels
+  const response = await fetch(LABELS_URL);
+  const text = await response.text();
+  const loadedLabels = text.split('\n').filter(label => label.trim() !== ''); // Filter out empty lines
+
+  model = loadedModel;
+  labels = loadedLabels;
+
+  console.log(`Model and ${labels.length} labels loaded successfully.`);
+
+  return { model, labels };
 }
 
-// Function to find the top K predictions from the output tensor
-async function getTopKClasses(logits: tf.Tensor, topK: number) {
+// --- Prediction Logic ---
+async function getTopKClasses(logits: tf.Tensor, topK: number, labels: string[]) {
   const values = await logits.data();
   const valuesAndIndices = [];
   for (let i = 0; i < values.length; i++) {
     valuesAndIndices.push({ value: values[i], index: i });
   }
-  valuesAndIndices.sort((a, b) => {
-    return b.value - a.value;
-  });
-  const topkValues = new Float32Array(topK);
-  const topkIndices = new Int32Array(topK);
-  for (let i = 0; i < topK; i++) {
-    topkValues[i] = valuesAndIndices[i].value;
-    topkIndices[i] = valuesAndIndices[i].index;
-  }
+  valuesAndIndices.sort((a, b) => b.value - a.value);
 
   const topClassesAndProbs = [];
-  for (let i = 0; i < topkIndices.length; i++) {
-    // Check if the label exists, to prevent errors with the mocked list
-    const dish = FOOD_LABELS[topkIndices[i]] || `Unknown Index: ${topkIndices[i]}`;
+  for (let i = 0; i < Math.min(topK, valuesAndIndices.length); i++) {
+    const index = valuesAndIndices[i].index;
     topClassesAndProbs.push({
-      dish,
-      confidence: Math.round(topkValues[i] * 100),
+      dish: labels[index] || `Unknown Index: ${index}`,
+      confidence: Math.round(valuesAndIndices[i].value * 100),
     });
   }
   return topClassesAndProbs;
 }
 
-
+// --- API Handler ---
 export const classifyDish = async (req: Request, res: Response) => {
   try {
-    const imageData = req.body.image;
+    const { model, labels } = await getOrLoadModelAndLabels();
 
+    const imageData = req.body.image;
     if (!imageData) {
       return res.status(400).json({ error: "No image provided" });
     }
@@ -62,20 +73,18 @@ export const classifyDish = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid image data" });
     }
 
-    const model = await getModel();
-
-    // The AIY food model expects a 224x224 image.
-    const imageTensor = tf.node.decodeImage(imageBuffer)
-        .resizeNearestNeighbor([224, 224])
-        .toFloat()
-        .div(tf.scalar(255)) // Normalize to [0, 1]
-        .expandDims(); // Add batch dimension
+    // Preprocess the image
+    const imageTensor = tf.tidy(() => {
+        const decoded = tf.node.decodeImage(imageBuffer) as tf.Tensor3D;
+        const resized = tf.image.resizeBilinear(decoded, [224, 224]);
+        const normalized = resized.div(tf.scalar(255.0));
+        return normalized.expandDims(0); // Add batch dimension
+    });
 
     const logits = model.predict(imageTensor) as tf.Tensor;
-    const predictions = await getTopKClasses(logits, 5);
+    const predictions = await getTopKClasses(logits, 5, labels);
 
-    imageTensor.dispose();
-    logits.dispose();
+    tf.dispose([imageTensor, logits]);
 
     return res.status(200).json({
       confidence: predictions[0]?.confidence || 0,
@@ -83,6 +92,8 @@ export const classifyDish = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Classify error:", error);
-    return res.status(500).json({ error: "Server error" });
+    // Provide a more specific error message if possible
+    const errorMessage = error instanceof Error ? error.message : "Server error";
+    return res.status(500).json({ error: errorMessage });
   }
 };
