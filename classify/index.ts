@@ -2,9 +2,9 @@ import { Request, Response } from "express";
 import * as tf from "@tensorflow/tfjs-node";
 import fetch from "node-fetch";
 
-// --- Configuration: URLs for the hosted model and labels ---
-const MODEL_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/tfjs_food_model/model.json";
-const LABELS_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/food_labels.txt";
+// --- Configuration: URLs for the final hosted model and labels ---
+const MODEL_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/final_tfjs_classification/final_tfjs_model/model.json";
+const LABELS_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/final_tfjs_classification/final_labels.txt";
 
 // --- Singleton to hold the loaded model and labels ---
 let model: tf.LayersModel | null = null;
@@ -15,20 +15,19 @@ async function getOrLoadModelAndLabels() {
     return { model, labels };
   }
 
-  console.log("Loading model and labels for the first time...");
+  console.log("Loading final custom model and labels for the first time...");
 
-  // Load the model from the URL
-  const loadedModel = await tf.loadLayersModel(MODEL_URL);
+  const modelPromise = tf.loadLayersModel(MODEL_URL);
+  const labelsPromise = fetch(LABELS_URL).then(res => res.text());
 
-  // Fetch and parse the labels
-  const response = await fetch(LABELS_URL);
-  const text = await response.text();
-  const loadedLabels = text.split('\n').filter(label => label.trim() !== ''); // Filter out empty lines
+  const [loadedModel, labelsText] = await Promise.all([modelPromise, labelsPromise]);
+
+  const loadedLabels = labelsText.split('\n').filter(label => label.trim() !== '');
 
   model = loadedModel;
   labels = loadedLabels;
 
-  console.log(`Model and ${labels.length} labels loaded successfully.`);
+  console.log(`Final model and ${labels.length} labels loaded successfully.`);
 
   return { model, labels };
 }
@@ -92,7 +91,6 @@ export const classifyDish = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Classify error:", error);
-    // Provide a more specific error message if possible
     const errorMessage = error instanceof Error ? error.message : "Server error";
     return res.status(500).json({ error: errorMessage });
   }
