@@ -1,37 +1,69 @@
 import { Request, Response } from "express";
 import * as tf from "@tensorflow/tfjs-node";
-import * as mobilenet from "@tensorflow-models/mobilenet";
+import fetch from "node-fetch";
 
-let model: mobilenet.MobileNet | null = null;
-async function getModel() {
-  if (!model) {
-    model = await mobilenet.load({version: 2});
+// --- Configuration: URLs for the final hosted model and labels ---
+const MODEL_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/final_tfjs_classification/final_tfjs_model/model.json";
+const LABELS_URL = "https://raw.githubusercontent.com/Auspicious14/foozam-food-model/main/final_tfjs_classification/final_labels.txt";
+
+// --- Singleton to hold the loaded model and labels ---
+let model: tf.LayersModel | null = null;
+let labels: string[] | null = null;
+
+async function getOrLoadModelAndLabels() {
+  if (model && labels) {
+    return { model, labels };
   }
-  return model;
+
+  console.log("Loading final custom model and labels for the first time...");
+
+  const modelPromise = tf.loadLayersModel(MODEL_URL);
+  const labelsPromise = fetch(LABELS_URL).then(res => res.text());
+
+  const [loadedModel, labelsText] = await Promise.all([modelPromise, labelsPromise]);
+
+  const loadedLabels = labelsText.split('\n').filter(label => label.trim() !== '');
+
+  model = loadedModel;
+  labels = loadedLabels;
+
+  console.log(`Final model and ${labels.length} labels loaded successfully.`);
+
+  return { model, labels };
 }
 
+// --- Prediction Logic ---
+async function getTopKClasses(logits: tf.Tensor, topK: number, labels: string[]) {
+  const values = await logits.data();
+  const valuesAndIndices = [];
+  for (let i = 0; i < values.length; i++) {
+    valuesAndIndices.push({ value: values[i], index: i });
+  }
+  valuesAndIndices.sort((a, b) => b.value - a.value);
+
+  const topClassesAndProbs = [];
+  for (let i = 0; i < Math.min(topK, valuesAndIndices.length); i++) {
+    const index = valuesAndIndices[i].index;
+    topClassesAndProbs.push({
+      dish: labels[index] || `Unknown Index: ${index}`,
+      confidence: Math.round(valuesAndIndices[i].value * 100),
+    });
+  }
+  return topClassesAndProbs;
+}
+
+// --- API Handler ---
 export const classifyDish = async (req: Request, res: Response) => {
   try {
-    const imageData = req.body.image;
+    const { model, labels } = await getOrLoadModelAndLabels();
 
+    const imageData = req.body.image;
     if (!imageData) {
       return res.status(400).json({ error: "No image provided" });
     }
 
-    console.log({imageData})
-
-    // Ensure imageData is a Buffer
     let imageBuffer: Buffer;
-
-    if (Buffer.isBuffer(imageData)) {
-      imageBuffer = imageData;
-    } else if (
-      imageData &&
-      imageData.type === "Buffer" &&
-      Array.isArray(imageData.data)
-    ) {
-      imageBuffer = Buffer.from(imageData.data);
-    } else if (typeof imageData === "string") {
+    if (typeof imageData === "string") {
       imageBuffer = Buffer.from(
         imageData.replace(/^data:image\/\w+;base64,/, ""),
         "base64"
@@ -39,25 +71,27 @@ export const classifyDish = async (req: Request, res: Response) => {
     } else {
       return res.status(400).json({ error: "Invalid image data" });
     }
-    
-    console.log({imageBuffer})
 
-    const model = await getModel();
-    const imageTensor = tf.node.decodeImage(imageBuffer) as tf.Tensor3D;
-    const predictions = await model.classify(imageTensor, 5);
-    imageTensor.dispose();
+    // Preprocess the image
+    const imageTensor = tf.tidy(() => {
+        const decoded = tf.node.decodeImage(imageBuffer) as tf.Tensor3D;
+        const resized = tf.image.resizeBilinear(decoded, [224, 224]);
+        const normalized = resized.div(tf.scalar(255.0));
+        return normalized.expandDims(0); // Add batch dimension
+    });
 
-    const topPredictions = predictions.map((p) => ({
-      dish: p.className,
-      confidence: Math.round(p.probability * 100),
-    }));
+    const logits = model.predict(imageTensor) as tf.Tensor;
+    const predictions = await getTopKClasses(logits, 5, labels);
+
+    tf.dispose([imageTensor, logits]);
 
     return res.status(200).json({
-      confidence: topPredictions[0]?.confidence || 0,
-      predictions: topPredictions,
+      confidence: predictions[0]?.confidence || 0,
+      predictions: predictions,
     });
   } catch (error) {
     console.error("Classify error:", error);
-    return res.status(500).json({ error: "Server error" });
+    const errorMessage = error instanceof Error ? error.message : "Server error";
+    return res.status(500).json({ error: errorMessage });
   }
 };
